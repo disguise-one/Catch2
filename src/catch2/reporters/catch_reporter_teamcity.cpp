@@ -19,6 +19,30 @@
 namespace Catch {
 
     namespace {
+
+        std::string fileNameTag(std::vector<Tag> const& tags) {
+            auto it = std::find_if(begin(tags),
+                                   end(tags),
+                                   [] (Tag const& tag) {
+                                       return tag.original.size() > 0
+                                           && tag.original[0] == '#'; });
+            if (it != tags.end()) {
+                return static_cast<std::string>(
+                    it->original.substr(1, it->original.size() - 1)
+                );
+            }
+            return std::string();
+        }
+
+        static void normalizeNamespaceMarkers(std::string& str) {
+            std::size_t pos = str.find( "::" );
+            while ( pos != str.npos ) {
+                str.replace( pos, 2, "." );
+                pos += 1;
+                pos = str.find( "::", pos );
+            }
+        }
+        
         // if string has a : in first line will set indent to follow it on
         // subsequent lines
         void printHeaderString(std::ostream& os, std::string const& _string, std::size_t indent = 0) {
@@ -35,7 +59,7 @@ namespace Catch {
         std::string escape(StringRef str) {
             std::string escaped = static_cast<std::string>(str);
             replaceInPlace(escaped, "|", "||");
-            replaceInPlace(escaped, "'", "|'");
+            replaceInPlace(escaped, "'", "`");
             replaceInPlace(escaped, "\n", "|n");
             replaceInPlace(escaped, "\r", "|r");
             replaceInPlace(escaped, "[", "|[");
@@ -58,7 +82,9 @@ namespace Catch {
     }
 
     void TeamCityReporter::assertionEnded(AssertionStats const& assertionStats) {
+       
         AssertionResult const& result = assertionStats.assertionResult;
+        
         if ( !result.isOk() ||
              result.getResultType() == ResultWas::ExplicitSkip ) {
 
@@ -107,51 +133,176 @@ namespace Catch {
             for (auto const& messageInfo : assertionStats.infoMessages)
                 msg << "\n  \"" << messageInfo.message << '"';
 
-
+            std::string failedDetail = "";
             if (result.hasExpression()) {
-                msg <<
-                    "\n  " << result.getExpressionInMacro() << "\n"
-                    "with expansion:\n"
-                    "  " << result.getExpandedExpression() << '\n';
+                failedDetail = result.getExpressionInMacro() + "\n" + result.getExpandedExpression();
             }
+ 
+            m_stream << "result failed:"<< escape( msg.str() ) <<"\n";
+            std::string flowId = m_sectionNameStack.empty()? m_lastTestCaseFullName : m_sectionNameStack.top();
 
             if ( result.getResultType() == ResultWas::ExplicitSkip ) {
+                m_stream << "ResultWas::ExplicitSkip\n";
+
                 m_stream << "##teamcity[testIgnored";
+
+                m_stream << " name='" << escape( currentTestCaseInfo->name ) << "'"
+                     << " message='" << escape( msg.str() ) << "' flowId='" << flowId << "']\n";
+
             } else if ( currentTestCaseInfo->okToFail() ) {
+                m_stream << "ResultWas::okToFail\n";
                 msg << "- failure ignore as test marked as 'ok to fail'\n";
                 m_stream << "##teamcity[testIgnored";
+
+                m_stream << " name='" << escape( currentTestCaseInfo->name ) << "'"
+                     << " message='" << escape( msg.str() ) << "' flowId='" << flowId << "']\n";
             } else {
+                m_stream << "ResultWas::testFailed\n";
                 m_stream << "##teamcity[testFailed";
+
+                m_stream << " name='" << escape( currentTestCaseInfo->name ) << "'"
+                     << " message='" << escape( msg.str() ) <<"'" << " details='"<<
+                     escape(failedDetail) << "'" << " flowId='" << flowId << "']\n";
             }
-            m_stream << " name='" << escape( currentTestCaseInfo->name ) << '\''
-                     << " message='" << escape( msg.str() ) << '\'' << "]\n";
+            
+            
         }
         m_stream.flush();
+        
     }
 
     void TeamCityReporter::testCaseStarting(TestCaseInfo const& testInfo) {
-        m_testTimer.start();
+        
         StreamingReporterBase::testCaseStarting(testInfo);
-        m_stream << "##teamcity[testStarted name='"
-            << escape(testInfo.name) << "']\n";
+        m_testTimer.start();
+        std::string testcaseName = escape(testInfo.name);
+        
+        m_lastTestCaseName = testcaseName;
+        m_lastTestCaseFullName = testcaseName;
+        
+        
+        std::string className = static_cast<std::string>(testInfo.className);
+      
+        //remove all spaces
+        std::string::iterator end_pos = std::remove(className.begin(), className.end(), ' ');
+        className.erase(end_pos, className.end());
+
+        //This is replicating Junit naming convention
+        if( className.empty() ) {
+            className = fileNameTag(testInfo.tags);
+            if ( className.empty() ) {
+                className = "global.";
+            }
+        }
+        if ( !m_config->name().empty() )
+            className = static_cast<std::string>(m_config->name())+": "+static_cast<std::string>(m_config->name()) + '.' + className;
+        normalizeNamespaceMarkers(className);
+
+        m_lastTestCaseFullName = escape(className + testcaseName);
+        
+        m_stream << "testCaseStarting:" << testcaseName << " FullName:" << m_lastTestCaseFullName << "\n";
+        
+        m_stream << "##teamcity[testStarted name='" << m_lastTestCaseFullName << "' " << "flowId='"<< m_lastTestCaseFullName << "' ]\n";
         m_stream.flush();
+
     }
 
     void TeamCityReporter::testCaseEnded(TestCaseStats const& testCaseStats) {
+        
         StreamingReporterBase::testCaseEnded(testCaseStats);
+        
         auto const& testCaseInfo = *testCaseStats.testInfo;
+        std::string testcaseName = escape(testCaseInfo.name);
+        
+        m_stream << "testCaseEnded:"<<testcaseName << " FullName:" << m_lastTestCaseFullName << "\n";
+
         if (!testCaseStats.stdOut.empty())
             m_stream << "##teamcity[testStdOut name='"
-            << escape(testCaseInfo.name)
-            << "' out='" << escape(testCaseStats.stdOut) << "']\n";
+            << m_lastTestCaseFullName
+            << "' out='" << escape(testCaseStats.stdOut) << "' " << "flowId='"<< m_lastTestCaseFullName <<"']\n";
+
         if (!testCaseStats.stdErr.empty())
             m_stream << "##teamcity[testStdErr name='"
-            << escape(testCaseInfo.name)
-            << "' out='" << escape(testCaseStats.stdErr) << "']\n";
+            << m_lastTestCaseFullName
+            << "' out='" << escape(testCaseStats.stdErr) << "' " << "flowId='"<< m_lastTestCaseFullName <<"']\n";
+            
+
         m_stream << "##teamcity[testFinished name='"
-            << escape(testCaseInfo.name) << "' duration='"
-            << m_testTimer.getElapsedMilliseconds() << "']\n";
+            << m_lastTestCaseFullName << "' duration='"
+            << m_testTimer.getElapsedMilliseconds() << "' " << "flowId='"<< m_lastTestCaseFullName <<"']\n";
+        
         m_stream.flush();
+        
+    }
+
+    void TeamCityReporter::sectionStarting(SectionInfo const& sectionInfo) {
+        if(m_lastTestCaseName == sectionInfo.name) // this is a TEST_CASE(), not SECTION()
+        {
+            return;
+        }
+
+        Timer newTimer;
+        newTimer.start();
+        m_timerStack.push(newTimer);
+        m_headerPrintedForThisSection = true;
+        StreamingReporterBase::sectionStarting( sectionInfo );
+
+        std::string testname = escape(sectionInfo.name);
+           
+        if(m_sectionNameStack.size()>0)
+        {
+                //this is a SECTION() or Nested SECTION()
+            testname = escape(m_sectionNameStack.top() + "/" + sectionInfo.name);
+        }
+        else
+        {
+            //first SECTION() after TEST_CASE()
+            testname = escape(m_lastTestCaseFullName + "/" + sectionInfo.name);
+        }
+
+        m_sectionNameStack.push(testname);
+
+        m_stream << "sectionStarting:"<<testname<< "\n";
+        m_stream << "##teamcity[testStarted name='" << testname << "' " << "flowId='"<< testname <<"']\n";
+        
+        m_stream.flush();
+
+        
+        
+
+    }
+
+    void TeamCityReporter::sectionEnded( SectionStats const& sectionStats ) {
+        if(m_lastTestCaseName == sectionStats.sectionInfo.name)
+        {
+            return;
+        }
+
+        StreamingReporterBase::sectionEnded(sectionStats);
+        
+        Timer newTimer = m_timerStack.top();
+        
+        if(m_sectionNameStack.empty())
+        {
+            m_stream << "something wrong!!!\n";
+            m_stream.flush();
+            return;
+        }
+
+        std::string testname = escape(m_sectionNameStack.top());
+
+
+        m_stream << "sectionEnded:"<<testname<< "\n";
+
+        m_stream << "##teamcity[testFinished name='"
+            << testname << "' duration='"
+            << newTimer.getElapsedMilliseconds() << "' " << "flowId='"<< testname <<"']\n";
+
+    
+        m_stream.flush();
+        m_timerStack.pop();
+        m_sectionNameStack.pop();
+
     }
 
     void TeamCityReporter::printSectionHeader(std::ostream& os) {

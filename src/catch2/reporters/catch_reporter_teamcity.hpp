@@ -13,6 +13,8 @@
 
 #include <cstring>
 
+#include <stack>
+
 #ifdef __clang__
 #   pragma clang diagnostic push
 #   pragma clang diagnostic ignored "-Wpadded"
@@ -41,11 +43,9 @@ namespace Catch {
 
         void assertionEnded(AssertionStats const& assertionStats) override;
 
-        void sectionStarting(SectionInfo const& sectionInfo) override {
-            m_headerPrintedForThisSection = false;
-            StreamingReporterBase::sectionStarting( sectionInfo );
-        }
-
+        void sectionStarting(SectionInfo const& sectionInfo) override;
+        void sectionEnded( SectionStats const& sectionStats ) override;
+        
         void testCaseStarting(TestCaseInfo const& testInfo) override;
 
         void testCaseEnded(TestCaseStats const& testCaseStats) override;
@@ -55,6 +55,12 @@ namespace Catch {
 
         bool m_headerPrintedForThisSection = false;
         Timer m_testTimer;
+        
+        std::string m_lastTestCaseName;
+        std::string m_lastTestCaseFullName;
+        
+        std::stack<std::string> m_sectionNameStack;
+        std::stack<Timer> m_timerStack;
     };
 
 } // end namespace Catch
